@@ -1,0 +1,496 @@
+#include "KanjiBase.h"
+#include "CustomTableViewCell.h"
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <algorithm>
+
+USING_NS_CC;
+USING_NS_CC_EXT;
+using namespace std;
+
+/*
+#if CC_TARGET_PLATFORM == CC_PLATFORM_MAC || CC_TARGET_PLATFORM == CC_PLATFORM_IOS || CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID
+string to_string(int t) {
+    ostringstream os;
+    os << t;
+    return os.str();
+}
+#endif
+*/
+
+KanjiBase::KanjiBase(void){
+
+}
+
+KanjiBase::~KanjiBase(void){
+
+}
+
+Scene* KanjiBase::createScene(){
+    // 'scene' is an autorelease object
+    auto scene = Scene::create();
+    
+    // 'layer' is an autorelease object
+    auto layer = KanjiBase::create();
+
+    // add layer as a child to scene
+    scene->addChild(layer);
+
+    // return the scene
+    return scene;
+}
+
+bool KanjiBase::init(){
+   if(!Layer::init()){
+      return false;
+   }
+   
+   _addToListScreenUp = false;
+   _createNewListScreenUp = false;
+   
+   auto size = Director::getInstance()->getVisibleSize();
+   Texture2D *bgTexture = Director::getInstance()->getTextureCache()->addImage("background.png");
+   const Texture2D::TexParams& tp = {GL_LINEAR, GL_LINEAR, GL_REPEAT, GL_REPEAT};
+   //use texture as sprite to fill background
+   Sprite *background = Sprite::createWithTexture(bgTexture, Rect(0, 0, size.width, size.height));
+   background->getTexture()->setTexParameters(tp);
+   background->setPosition(Vec2(size.width/2, size.height/2));
+   this->addChild(background);     // add a background sprite to watch more obviously
+   
+   //Create kanjibase main menu
+   backToMainMenu(nullptr);
+   
+   cout << "numOfLists: " << UserDefault::getInstance()->getIntegerForKey("numOfLists") << endl;
+   //load user lists
+   for(int i = 0; i < UserDefault::getInstance()->getIntegerForKey("numOfLists"); i++){
+      string listName = "list" + to_string(i);
+      userLists.push_back(UserDefault::getInstance()->getStringForKey(listName.c_str()));
+   }
+   
+   return true;
+
+}
+
+//called when 'back' button is hit on a dictionary menu
+void KanjiBase::backToMainMenu(cocos2d::Ref *pSender){
+   this->kanjiBaseMenu = createKBMenu();
+   this->addChild(kanjiBaseMenu);
+   
+   if(pSender != nullptr){
+      this->removeChild(pTable);
+      this->removeChild(kanjiInfoMenu);
+      this->removeChild(kanjiLabel);
+      this->removeChildByTag(50);
+   }
+}
+
+void KanjiBase::backToMainScene(cocos2d::Ref *pSender){
+   saveData();
+   Director::getInstance()->popScene();
+}
+
+Menu *KanjiBase::createKBMenu(){
+   auto size = Director::getInstance()->getWinSize();
+   
+   auto back_menu_label = Label::createWithTTF("Back", "fonts/falcon.ttf", 60);
+   auto back_menu = MenuItemLabel::create(back_menu_label, CC_CALLBACK_1(KanjiBase::backToMainScene, this));
+   auto N5_dict_label = Label::createWithTTF("N5 Dictionary", "fonts/falcon.ttf", 60);
+   auto N5_dictionary = MenuItemLabel::create(N5_dict_label, CC_CALLBACK_1(KanjiBase::N5Callback, this));
+   auto menu = Menu::create(back_menu,N5_dictionary,nullptr);
+   menu->alignItemsVertically();
+   menu->setPosition(Point(size.width/2, size.height/2));
+   
+   return menu;
+}
+
+string KanjiBase::wrap(const char *text, size_t line_length = 20)
+{
+   istringstream words(text);
+   ostringstream wrapped;
+   string word;
+   
+   if(words >> word){
+      wrapped << word;
+      size_t space_left = line_length - word.length();
+      while(words >> word){
+         if(space_left < word.length() + 1){
+            wrapped << '\n' << word;
+            space_left = line_length - word.length();
+         } else
+         {
+            wrapped << ' ' << word;
+            space_left -= word.length() + 1;
+         }
+      }
+   }
+   return wrapped.str();
+}
+void KanjiBase::addToExistingListCallback(cocos2d::Ref *pSender){
+   MenuItemLabel *listLabel = dynamic_cast<MenuItemLabel*>(pSender);
+   Label *listLabelLabel = dynamic_cast<Label*>(listLabel->getLabel());
+   string path = listLabelLabel->getString() + ".plist";
+   path = FileUtils::getInstance()->getWritablePath() + path;
+   //cout << path << endl;
+   
+   ValueMap kanjiDict;
+   //create new term
+   auto kanjiEntry = (N5Dict.at(to_string(listLabel->getTag()))).asValueMap();
+   //if dictionary file already exists
+   if(FileUtils::getInstance()->isFileExist(path)){
+      //open dictionary
+      kanjiDict = FileUtils::getInstance()->getValueMapFromFile(path);
+   }
+   
+   //add new term
+   string index = to_string(kanjiDict.size());
+   int found = 0;
+   for(unsigned int i = 0; i < kanjiDict.size(); i++){
+      string str = to_string(i);
+      const char *str1 = str.c_str();
+      ValueMap compareEntry = N5Dict.at(str1).asValueMap();
+      if(kanjiEntry.at("Kanji").asString().compare(compareEntry.at("Kanji").asString()) == 0){
+         found = 1;
+      }
+   }
+   if(!found){
+      //add entry and save new dictionary
+      kanjiDict[index.c_str()] = kanjiEntry;
+      FileUtils::getInstance()->writeToFile(kanjiDict, path);
+   }
+   backAddToListCallback(pSender);
+}
+
+void KanjiBase::confirmNewListCallback(cocos2d::Ref *pSender){
+   //get new list name from text field
+   string newListName = enterListName->getString();
+   if(std::find(userLists.begin(), userLists.end(), newListName) != userLists.end() || newListName.length() >= 30 || newListName.compare("") == 0 || userLists.size() >= 10){
+      enterListName->setString("Invalid entry");
+   }
+   else{
+      userLists.push_back(newListName);
+      UserDefault::getInstance()->setIntegerForKey("numOfLists", userLists.size());
+      MenuItemLabel *ref = dynamic_cast<MenuItemLabel*>(pSender);
+      auto addToDaMenu_label = Label::createWithTTF(newListName, "fonts/falcon.ttf", 48);
+      auto addToDaMenu = MenuItemLabel::create(addToDaMenu_label, CC_CALLBACK_1(KanjiBase::addToExistingListCallback, this));
+      addToDaMenu->setTag(ref->getTag());
+      _existingListsMenu->addChild(addToDaMenu);
+      _existingListsMenu->alignItemsVerticallyWithPadding(5);
+      //now close the menu
+      returnToAddToListCallback(pSender);
+   }
+}
+
+//closes the Create New List menu
+void KanjiBase::returnToAddToListCallback(cocos2d::Ref *pSender){
+   //do for all new objects
+   //this->removeChild
+   this->removeChild(createNewList);
+   //this->removeChild(enterListName);
+   //this->removeChild(_createNewListMenu);
+   
+   _createNewListScreenUp = false;
+   
+   //enable underlying objects
+   _addToListMenu->setEnabled(true);
+}
+
+//opens the Create New List menu
+void KanjiBase::createNewListCallback(cocos2d::Ref *pSender){
+
+   if(_createNewListScreenUp == false){
+      //disable underlying objects if needed
+      _addToListMenu->setEnabled(false);
+      
+      _createNewListScreenUp = true;
+      Size winSize = Director::getInstance()->getVisibleSize();
+      createNewList = LayerColor::create(Color4B(0, 0, 0, 160), winSize.width, winSize.height);
+      createNewList->setPosition(Vec2::ZERO);
+      this->addChild(createNewList, 12);
+      
+      //create text input field
+      enterListName = TextFieldTTF::textFieldWithPlaceHolder("Type here", Size(300, 150), TextHAlignment::CENTER, "fonts/falcon.ttf", 28);
+      enterListName->setPosition(winSize.width/2, winSize.height/2);
+      enterListName->setColorSpaceHolder(Color3B::ORANGE);
+      enterListName->setDelegate(this);
+      createNewList->addChild(enterListName, 14);
+      
+
+      //add a touch handler to our text field that will show a keyboard when touched
+      auto touchListener = EventListenerTouchOneByOne::create();
+      
+      touchListener->onTouchBegan = [](cocos2d::Touch *touch, cocos2d::Event *event)->bool{
+         try{
+            //Show the on screen keyboard
+            auto textField = dynamic_cast<TextFieldTTF*>(event->getCurrentTarget());
+            textField->attachWithIME();
+            return true;
+         }
+         catch(std::bad_cast & err){
+            return true;
+         }
+      };
+      
+      this->_eventDispatcher->addEventListenerWithSceneGraphPriority(touchListener, enterListName);
+      
+      //create two buttons "back" and "confirm"
+      auto backFromNewList_label = Label::createWithTTF("Back", "fonts/falcon.ttf", 40);
+      auto backFromNewList = MenuItemLabel::create(backFromNewList_label, CC_CALLBACK_1(KanjiBase::returnToAddToListCallback, this));
+      auto confirmNewListItem_label = Label::createWithTTF("Confirm New\nList", "fonts/falcon.ttf", 40);
+      auto confirmNewList = MenuItemLabel::create(confirmNewListItem_label, CC_CALLBACK_1(KanjiBase::confirmNewListCallback, this));
+      MenuItemLabel *ref = dynamic_cast<MenuItemLabel*>(pSender);
+      confirmNewList->setTag(ref->getTag());
+      dynamic_cast<Label*>(confirmNewList->getLabel())->setAlignment(TextHAlignment::CENTER);
+      
+      //create menu
+      _createNewListMenu = Menu::create(confirmNewList, backFromNewList, nullptr);
+      _createNewListMenu->setPosition(winSize.width/2, winSize.height*.3);
+      _createNewListMenu->alignItemsHorizontallyWithPadding(75);
+      //this->addChild(_createNewListMenu, 14);
+      createNewList->addChild(_createNewListMenu, 14);
+   }
+}
+
+//closes the Add To List menu
+void KanjiBase::backAddToListCallback(cocos2d::Ref *pSender){
+   //this->removeChild(_addToListMenu);
+   //this->removeChild(_addToListScreen);
+   this->removeChild(addToList);
+   
+   _addToListScreenUp = false;
+   
+   pTable->setTouchEnabled(true);
+   kanjiAddToListButton->setEnabled(true);
+   N5back_menu->setEnabled(true);
+}
+
+//opens up the Add To List menu
+void KanjiBase::addToListCallback(cocos2d::Ref *pSender){
+   if(_addToListScreenUp == false){
+      pTable->setTouchEnabled(false);
+      kanjiAddToListButton->setEnabled(false);
+      N5back_menu->setEnabled(false);
+   
+      MenuItemImage *ref = dynamic_cast<MenuItemImage*>(pSender);
+      
+      _addToListScreenUp = true;
+      Size winSize = Director::getInstance()->getVisibleSize();
+      addToList = LayerColor::create(Color4B(0, 0, 0, 80), winSize.width, winSize.height);
+      addToList->setPosition(Vec2::ZERO);
+      this->addChild(addToList, 8);
+      _addToListScreen = Sprite::create("addToListBackground.png");
+      _addToListScreen->setPosition(winSize.width/2, winSize.height/2);
+      //this->addChild(_addToListScreen, 9);
+      addToList->addChild(_addToListScreen, 9);
+      
+      auto makeNewListItem_label = Label::createWithTTF("Make New List", "fonts/falcon.ttf", 48);
+      auto *makeNewListItem = MenuItemLabel::create(makeNewListItem_label, CC_CALLBACK_1(KanjiBase::createNewListCallback, this));
+      makeNewListItem->setTag(ref->getTag());
+      auto backLabel_label = Label::createWithTTF("Back", "fonts/falcon.ttf", 48);
+      auto *backLabel = MenuItemLabel::create(backLabel_label, CC_CALLBACK_1(KanjiBase::backAddToListCallback, this));
+      
+      _addToListMenu = Menu::create(makeNewListItem, backLabel, nullptr);
+      _addToListMenu->setPosition(_addToListScreen->getPosition().x*.6, winSize.height/2);
+      _addToListMenu->alignItemsVerticallyWithPadding(25);
+      //this->addChild(_addToListMenu, 10);
+      addToList->addChild(_addToListMenu, 10);
+      
+      //create menu of existing lists
+      _existingListsMenu = Menu::create();
+      for(int i = 0; i < UserDefault::getInstance()->getIntegerForKey("numOfLists"); i++){
+         auto addToDaMenu_label = Label::createWithTTF(userLists[i].c_str(), "fonts/falcon.ttf", 40);
+         auto addToDaMenu = MenuItemLabel::create(addToDaMenu_label, CC_CALLBACK_1(KanjiBase::addToExistingListCallback, this));
+         addToDaMenu->setTag(ref->getTag());
+         _existingListsMenu->addChild(addToDaMenu);
+      }
+      _existingListsMenu->setPosition(winSize.width*.7, winSize.height*.4);
+      _existingListsMenu->alignItemsVerticallyWithPadding(5);
+      addToList->addChild(_existingListsMenu, 10);
+   }
+}
+
+//Open dictionary file
+void KanjiBase::N5Callback(cocos2d::Ref *pSender){
+   //close mainmenu
+   this->removeChild(this->kanjiBaseMenu);
+   
+   Size winSize = Director::getInstance()->getVisibleSize();
+   
+   //create back button
+   auto N5back_menu_label = Label::createWithTTF("Back", "fonts/falcon.ttf", 60);
+   N5back_menu = MenuItemLabel::create(N5back_menu_label, CC_CALLBACK_1(KanjiBase::backToMainMenu, this));
+   auto N5menu = Menu::create(N5back_menu,nullptr);
+   N5menu->setTag(50);
+   N5menu->setPosition(Point(winSize.width, winSize.height));
+   N5back_menu->setAnchorPoint(Point(1, 1));
+   this->addChild(N5menu);
+   
+   //init kanjiInfoMenu
+   kanjiLabel = Label::createWithTTF("some info about the kanji", "fonts/falcon.ttf", 36);
+   kanjiLabel->setColor(Color3B(246, 103, 51));
+   
+   //create actual background image*****************
+   auto kanjiMenuBackground = MenuItemImage::create("kanjiInfoBG.png", "kanjiInfoBG.png", "kanjiInfoBG.png");
+   kanjiAddToListButton = MenuItemImage::create("addToListButton.png", "addToListButtonselected.png", CC_CALLBACK_1(KanjiBase::addToListCallback, this));
+   
+   //fix text wrap
+   kanjiLabel->setDimensions(kanjiMenuBackground->getContentSize().width*.95, kanjiMenuBackground->getContentSize().height);
+   kanjiLabel->setHorizontalAlignment(TextHAlignment::CENTER);
+   kanjiLabel->setVerticalAlignment(TextVAlignment::CENTER);
+   
+   kanjiInfoMenu = Menu::create(kanjiMenuBackground, kanjiAddToListButton, nullptr);
+   kanjiInfoMenu->setPosition(Vec2(winSize.width*.75, winSize.height*.5));
+   kanjiInfoMenu->setAnchorPoint(Vec2(0.5, 0.5));
+   
+   kanjiLabel->setPosition(kanjiInfoMenu->getPosition());
+   kanjiAddToListButton->setPositionY(-winSize.height*.3);
+   
+   kanjiInfoMenu->setVisible(false);
+   kanjiLabel->setVisible(false);
+   //***********set label as child of menu?
+   this->addChild(kanjiLabel, 2);
+   this->addChild(kanjiInfoMenu, 1);
+   
+   //now display the dictionary
+   //open dictionary plist file
+   std::string path = FileUtils::getInstance()->fullPathForFilename("dictionaries/N5.plist");
+   N5Dict = FileUtils::getInstance()->getValueMapFromFile(path);
+   //cout << N5Dict.size() << endl;
+   numOfCells = N5Dict.size();
+   
+   //create a tableview
+   //if you change the cell icons, adjust this value
+   pTable = TableView::create(this, Size(150, winSize.height));
+   pTable->setDirection(ScrollView::Direction::VERTICAL);
+   pTable->setPosition(Vec2(winSize.width * 0.25,0));
+   pTable->setDelegate(this);
+   pTable->setVerticalFillOrder(TableView::VerticalFillOrder::TOP_DOWN);
+   this->addChild(pTable);
+   pTable->reloadData();
+
+   //traverse dictionary
+   for(unsigned int i = 0; i < N5Dict.size(); i++){
+      string str = to_string(i);
+      const char *str1 = str.c_str();
+      ValueMap kanjiEntry = N5Dict.at(str1).asValueMap();
+      auto kanjiName = kanjiEntry.at("Kanji").asString();
+      //cout << kanjiName << endl;
+   }
+   
+   //tbd
+   
+}
+
+//tableview functions
+void KanjiBase::tableCellTouched(TableView* table, TableViewCell* cell)
+{
+    //CCLOG("cell touched at index: %ld", cell->getIdx());
+    
+    //display more information about the kanji
+    auto kanjiEntry = N5Dict.at(to_string(cell->getIdx())).asValueMap();
+    string KanjiToLabel = "Kanji: " + kanjiEntry.at("Kanji").asString() + "\n\n";
+    KanjiToLabel += "Definition: " + kanjiEntry.at("Definition").asString() + "\n\n";
+    if(kanjiEntry.find("Kunyomi") != kanjiEntry.end())
+      KanjiToLabel += "Kunyomi: " + kanjiEntry.at("Kunyomi").asString() + "\n\n";
+    if(kanjiEntry.find("Onyomi") != kanjiEntry.end())
+       KanjiToLabel += "Onyomi: " + kanjiEntry.at("Onyomi").asString() + "\n\n";
+    
+    //update string
+    kanjiLabel->setString(KanjiToLabel.c_str());
+    
+    //make menu visible
+    if(!kanjiInfoMenu->isVisible()){
+      kanjiInfoMenu->setVisible(true); 
+      kanjiLabel->setVisible(true);
+    }
+    
+    //update tag of button with kanji value
+    kanjiAddToListButton->setTag(cell->getIdx());
+}
+
+Size KanjiBase::tableCellSizeForIndex(TableView *table, ssize_t idx)
+{
+
+    return Size(100, 60);
+}
+
+TableViewCell* KanjiBase::tableCellAtIndex(TableView *table, ssize_t idx)
+{
+   //creates the numbers for the string, with idx being the index
+   //cout << std::to_string(idx) << endl;
+   auto kanjiEntry = N5Dict.at(to_string(idx)).asValueMap();
+   std::string kanjiString = kanjiEntry.at("Kanji").asString();
+   //cout << kanjiString << endl;
+   TableViewCell *cell = table->dequeueCell();
+   //creates default icon with index if table doesn't contain cell
+   if (!cell) {
+      cell = new CustomTableViewCell();
+      cell->autorelease();
+      //create default icon sprite
+      auto sprite = Sprite::create("Icon.png");
+      sprite->setAnchorPoint(Vec2::ZERO);
+      sprite->setPosition(cell->getContentSize().width/2, cell->getContentSize().height/2);
+      cell->addChild(sprite);
+      
+      //generates the numbered label for each icon
+      auto label = Label::createWithSystemFont(kanjiString, "fonts/falcon.ttf", 30.0);
+      label->setPosition(Vec2(sprite->getContentSize().width/2, sprite->getContentSize().height/2));
+      label->setAnchorPoint(Vec2(0.5, 0.5));
+      label->setTag(123);
+      cell->addChild(label);
+   }
+   //generates cell's label
+   else
+   {
+      auto label = (Label*)cell->getChildByTag(123);
+      label->setString(kanjiString);
+   }
+
+
+   return cell;
+}
+
+ssize_t KanjiBase::numberOfCellsInTableView(TableView *table)
+{
+    return numOfCells;
+}
+
+bool KanjiBase::onTextFieldAttachWithIME(TextFieldTTF *sender) {
+    return TextFieldDelegate::onTextFieldAttachWithIME(sender);
+}
+
+bool KanjiBase::onTextFieldDetachWithIME(TextFieldTTF *sender) {
+    return TextFieldDelegate::onTextFieldDetachWithIME(sender);
+}
+
+bool KanjiBase::onTextFieldInsertText(TextFieldTTF *sender, const char *text, size_t nLen) {
+    return TextFieldDelegate::onTextFieldInsertText(sender, text, nLen);
+}
+
+bool KanjiBase::onTextFieldDeleteBackward(TextFieldTTF *sender, const char *delText, size_t nLen) {
+   return TextFieldDelegate::onTextFieldDeleteBackward(sender, delText, nLen);
+}
+
+bool KanjiBase::onVisit(TextFieldTTF *sender, Renderer *renderer, const Mat4 &transform, uint32_t flags) {
+    return TextFieldDelegate::onVisit(sender, renderer, transform, flags);
+}
+
+void KanjiBase::saveData(){
+
+   //set new number of lists, up to 10 max
+   UserDefault::getInstance()->setIntegerForKey("numOfLists", userLists.size());
+   
+   //save lists, clear out values larger than 10
+   for(unsigned int i = 0; i < 10; i++){
+      string listName = "list" + to_string(i);
+      if(i < userLists.size()){
+         UserDefault::getInstance()->setStringForKey(listName.c_str(), userLists[i]);
+      }
+      else{
+         UserDefault::getInstance()->setStringForKey(listName.c_str(), "");
+      }
+   }
+   
+   //save to XML
+   UserDefault::getInstance()->flush();
+}
